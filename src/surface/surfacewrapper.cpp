@@ -205,6 +205,11 @@ SurfaceWrapper::~SurfaceWrapper()
         delete m_coverContent;
         m_coverContent = nullptr;
     }
+    // Explicitly delete m_surfaceItem to prevent use-after-free
+    if (m_surfaceItem) {
+        delete m_surfaceItem;
+        m_surfaceItem = nullptr;
+    }
     // Ensure we do not hold stale connections to shellSurface; QPointer may already be null.
     if (m_shellSurface) {
         QObject::disconnect(m_shellSurface, nullptr, this, nullptr);
@@ -414,11 +419,19 @@ void SurfaceWrapper::convertToNormalSurface(WToplevelSurface *shellSurface, Type
     m_type = type;
     Q_EMIT typeChanged();
 
+    // Validate incoming shellSurface parameter
+    if (!shellSurface) {
+        qCCritical(treelandSurface) << "convertToNormalSurface called with null shellSurface";
+        return;
+    }
+
     // Call setup() to initialize surfaceItem related features
     setup();
     m_surfaceItem->setVisible(false);
 
-    if (surface()->mapped()) {
+    // Check if surface is still valid before accessing
+    WSurface *surf = surface();
+    if (surf && surf->mapped()) {
         syncPrelaunchMappedState();
         startPrelaunchSplashHideSequence();
     }
@@ -639,7 +652,8 @@ QString SurfaceWrapper::appId() const
     if (!m_appId.isEmpty())
         return m_appId;
     // TODO: consider to use "xdg-shell/" + m_shellSurface->appId(), need dde-shell adaptation
-    if (m_shellSurface)
+    // Check if shellSurface is still valid before accessing
+    if (!m_shellSurface.isNull())
         return m_shellSurface->appId();
     return QString();
 }
@@ -1002,8 +1016,11 @@ void SurfaceWrapper::markWrapperToRemoved()
                    &SurfaceWrapper::onSocketEnabledChanged);
     }
     m_shellSurface = nullptr;
-    if (m_surfaceItem)
+    if (m_surfaceItem) {
         m_surfaceItem->disconnect(this);
+        delete m_surfaceItem;
+        m_surfaceItem = nullptr;
+    }
 
     if (!isWindowAnimationRunning()) {
         deleteLater();

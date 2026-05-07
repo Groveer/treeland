@@ -1,4 +1,4 @@
-// Copyright (C) 2024 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2024-2026 UnionTech Software Technology Co., Ltd.
 // SPDX-License-Identifier: MIT
 
 #include "wsecuritycontextmanager.h"
@@ -220,8 +220,19 @@ static int security_context_handle_listen_fd_event(int listen_fd, uint32_t mask,
             return 0;
         }
 
-        struct wl_display *display =
-            wl_global_get_display(security_context->manager->global);
+        struct wl_display *display = wl_global_get_display(security_context->manager->global);
+
+        // Validate client_list integrity before wl_client_create to prevent
+        // crash if display->client_list.prev points to freed memory.
+        struct wl_list *clientList = wl_display_get_client_list(display);
+        if (!clientList->prev || !clientList->next || !clientList->prev->next
+            || !clientList->next->prev) {
+            wlr_log(WLR_ERROR, "display->client_list corrupted, refusing wl_client_create");
+            close(client_fd);
+            free(security_context_client);
+            return 0;
+        }
+
         struct wl_client *client = wl_client_create(display, client_fd);
         if (client == NULL) {
             wlr_log(WLR_ERROR, "wl_client_create failed");

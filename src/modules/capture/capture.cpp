@@ -236,9 +236,18 @@ void CaptureContextV1::handleSourceDestroyed()
 void CaptureContextV1::handleSessionStart()
 {
     m_currentFrameData.acked = true;
-    moveToThread(QQuickWindowPrivate::get(outputRenderWindow())->context->thread());
-    captureSource()->moveToThread(
-        QQuickWindowPrivate::get(outputRenderWindow())->context->thread());
+    // NOTE: Do NOT moveToThread for CaptureContextV1 or CaptureSource.
+    // moveToThread() moves the object's thread affinity, which means
+    // deleteLater() will schedule deletion in the render thread. However,
+    // the QML V4 GC may still track ScarceResourceData (QImage/QPixmap
+    // wrapped in QVariant) on the main thread. If the object is destroyed
+    // on the render thread while the GC is sweeping on the main thread,
+    // the QIntrusiveListNode chain gets corrupted (prev pointer becomes
+    // 0xFFFFFFFF), leading to SIGSEGV in QIntrusiveListNode::remove().
+    //
+    // Qt::AutoConnection already handles cross-thread signal delivery
+    // correctly: renderEnd is emitted from the render thread, and the
+    // slot will be invoked via queued connection on the main thread.
     auto conn = connect(outputRenderWindow(),
                         &WOutputRenderWindow::renderEnd,
                         this,

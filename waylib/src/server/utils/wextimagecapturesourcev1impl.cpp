@@ -1,4 +1,4 @@
-// Copyright (C) 2025 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2025-2026 UnionTech Software Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0 OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 
 #include "wextimagecapturesourcev1impl.h"
@@ -16,7 +16,7 @@
 #include <qwcompositor.h>
 
 #include <QLoggingCategory>
-#include <private/qquickwindow_p.h>
+
 #include <memory>
 
 Q_LOGGING_CATEGORY(qLcImageCapture, "waylib.server.imagecapture")
@@ -122,17 +122,18 @@ WExtImageCaptureSourceV1Impl::WExtImageCaptureSourceV1Impl(WSurfaceItemContent *
     , m_renderEndConnection()
 {
     Q_ASSERT(m_surfaceContent);
-    
-    // Get texture provider and render window for thread setup
-    auto textureProvider = m_surfaceContent->wTextureProvider();
-    if (textureProvider) {
-        auto renderWindow = textureProvider->window();
-        if (renderWindow) {
-            // Move to render thread
-            moveToThread(QQuickWindowPrivate::get(renderWindow)->context->thread());
-        }
-    }
-    
+
+    // NOTE: Do NOT moveToThread here.
+    // moveToThread() changes the object's thread affinity so that deleteLater()
+    // schedules deletion on the render thread. If this object (or any parent
+    // tracked by QML) holds ScarceResourceData (QImage/QPixmap in QVariant),
+    // destroying it on the render thread while the V4 GC sweeps on the main
+    // thread corrupts QIntrusiveListNode chain (prev = 0xFFFFFFFF), causing
+    // SIGSEGV in QIntrusiveListNode::remove().
+    //
+    // Qt::AutoConnection already correctly delivers cross-thread signals:
+    // renderEnd emitted from render thread → slot queued on main thread.
+
     // Initialize wlr_ext_image_capture_source_v1
     wlr_ext_image_capture_source_v1_init(handle(), impl());
     

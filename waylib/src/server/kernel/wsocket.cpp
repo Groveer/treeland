@@ -499,10 +499,12 @@ void WSocket::close()
     }
 
     if (!d->clients.isEmpty()) {
-        for (auto client : std::as_const(d->clients))
+        // Copy the list first to avoid iterator invalidation when removeClient()
+        // triggers handle_destroy which also modifies d->clients.
+        auto clientsCopy = d->clients;
+        for (auto client : std::as_const(clientsCopy))
             removeClient(client);
 
-        d->clients.clear();
         Q_EMIT clientsChanged();
     }
 }
@@ -740,6 +742,7 @@ bool WSocket::listen(wl_display *display)
 WClient *WSocket::addClient(int fd)
 {
     W_D(WSocket);
+
     auto client = wl_client_create(d->display, fd);
     if (!client) {
         qCWarning(waylibSocket) << "Failed to create Wayland client for fd:" << fd;
@@ -790,7 +793,15 @@ bool WSocket::removeClient(WClient *client)
 
     auto handle = client->handle();
     if (handle && client->d_func()->isWlClientOwned) {
-        // Set handle to nullptr to prevent handle_destroy from calling removeClient again
+        // Remove the destroy listeners before calling wl_client_destroy to prevent
+        // handle_destroy from modifying d->clients again (which we already cleared)
+        // and handle_destroy_late from deleting the WClient (we handle deletion below).
+        // This avoids double-delete and iterator invalidation.
+        auto listener = WlClientDestroyListener::get(handle);
+        if (!listener)
+            listener = WlClientDestroyListener::get_late(handle);
+        delete listener; // removes both destroy and destroy_late listeners
+
         client->d_func()->handle = nullptr;
         wl_client_destroy(handle);
     }

@@ -1,4 +1,4 @@
-// Copyright (C) 2024 UnionTech Software Technology Co., Ltd.
+// Copyright (C) 2024-2026 UnionTech Software Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0 OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
 
 #include "wtextureproviderprovider.h"
@@ -6,7 +6,6 @@
 #include "private/wglobal_p.h"
 
 #include <rhi/qrhi.h>
-#include <private/qquickwindow_p.h>
 
 WAYLIB_SERVER_BEGIN_NAMESPACE
 Q_LOGGING_CATEGORY(qLcTextureProvider, "waylib.server.texture.provider")
@@ -42,12 +41,23 @@ QFuture<QImage> WTextureCapturer::grabToImage()
 {
     W_D(WTextureCapturer);
     auto future = d->imgPromise.future();
-    moveToThread(QQuickWindowPrivate::get(d->renderWindow)->context->thread());
-    if (d->renderWindow->inRendering()) {
-        connect(d->renderWindow, &WOutputRenderWindow::renderEnd, this, &WTextureCapturer::doGrabToImage, Qt::AutoConnection);
-    } else {
-        // FIXME What if a new render process start before this job is executed?
-        QMetaObject::invokeMethod(this, &WTextureCapturer::doGrabToImage, Qt::AutoConnection);
+    // Do NOT moveToThread here. Keeping this object on the main thread avoids
+    // V4 GC ScarceResourceData corruption: if the object (or any QML-tracked
+    // parent/child) holds a QVariant wrapping QImage/QPixmap, destroying it on
+    // the render thread while the V4 GC sweeps scarceResources on the main
+    // thread corrupts the QIntrusiveListNode chain (prev = 0xFFFFFFFF).
+    //
+    // Use DirectConnection so that doGrabToImage runs in the render thread's
+    // signal emission context (renderEnd is emitted from the render thread),
+    // which is required for RHI GPU readback operations.
+    connect(d->renderWindow,
+            &WOutputRenderWindow::renderEnd,
+            this,
+            &WTextureCapturer::doGrabToImage,
+            Qt::DirectConnection);
+    if (!d->renderWindow->inRendering()) {
+        // Request a frame so that renderEnd will be emitted soon.
+        d->renderWindow->update();
     }
     return future;
 }
@@ -86,6 +96,14 @@ void WTextureCapturer::doGrabToImage()
         d->imgPromise.setException(std::make_exception_ptr(std::runtime_error("Texture provider is not valid.")));
     }
     d->imgPromise.finish();
+
+    // Disconnect after one-shot readback. No moveToThread needed — this object
+    // never left the main thread. The DirectConnection slot ran in the render
+    // thread's signal context, but the object's thread affinity is unchanged.
+    disconnect(d->renderWindow,
+               &WOutputRenderWindow::renderEnd,
+               this,
+               &WTextureCapturer::doGrabToImage);
 }
 
 WAYLIB_SERVER_END_NAMESPACE
